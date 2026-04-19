@@ -1,0 +1,681 @@
+// =====================================================================
+//  WATC — Schéma Prisma (PostgreSQL)
+//  Plateforme Intelligente d'Évaluation & d'Encadrement PFE
+//  Version 2.0 — Avril 2025
+// =====================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =====================================================================
+//  AUTHENTIFICATION & UTILISATEURS
+// =====================================================================
+
+enum UserRole {
+  STUDENT
+  SUPERVISOR
+  ADMIN
+  COMPANY
+}
+
+enum AuthProvider {
+  EMAIL
+  GOOGLE
+  GITHUB
+  LINKEDIN
+  FACEBOOK
+}
+
+model User {
+  id              String        @id @default(cuid())
+  email           String        @unique
+  username        String?       @unique
+  passwordHash    String?
+  role            UserRole      @default(STUDENT)
+  provider        AuthProvider  @default(EMAIL)
+  providerId      String?
+  emailVerified   DateTime?
+  firstName       String?
+  lastName        String?
+  profileImageUrl String?
+  locale          String        @default("fr")
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations 1-1
+  profile         StudentProfile?
+  supervisor      Supervisor?
+  company         Company?
+
+  // Relations 1-n
+  accounts        Account[]
+  sessions        Session[]
+  bookings        Booking[]
+  payments        Payment[]
+  testSessions    TestSession[]
+  reports         Report[]
+  pfeProjects     PFE[]
+  notifications   Notification[]
+  auditLogs       AuditLog[]
+
+  @@index([email])
+  @@index([role])
+}
+
+// Modèles NextAuth standard
+model Account {
+  id                 String   @id @default(cuid())
+  userId             String
+  type               String
+  provider           String
+  providerAccountId  String
+  refresh_token      String?  @db.Text
+  access_token       String?  @db.Text
+  expires_at         Int?
+  token_type         String?
+  scope              String?
+  id_token           String?  @db.Text
+  session_state      String?
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// =====================================================================
+//  PROFIL ÉTUDIANT — §3.3 (4 étapes)
+// =====================================================================
+
+enum DiplomaType {
+  INGENIEUR
+  MASTER
+  LICENCE
+}
+
+enum Filiere {
+  INFORMATIQUE
+  ELECTRONIQUE
+}
+
+enum StudyLevel {
+  PREMIERE_ANNEE
+  DEUXIEME_ANNEE
+  TERMINALE
+}
+
+enum LanguageLevel {
+  A1
+  A2
+  B1
+  B2
+  C1
+  C2
+  NATIVE
+}
+
+enum SkillLevel {
+  NOTIONS
+  PARTIAL
+  COMPLETE
+}
+
+enum ProfileStatus {
+  INCOMPLETE
+  COMPLETE
+  PAID
+  TESTED
+}
+
+model StudentProfile {
+  id               String         @id @default(cuid())
+  userId           String         @unique
+  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Étape 1 — Coordonnées
+  dateOfBirth      DateTime?
+  phone            String?
+  address          String?
+  diplomaType      DiplomaType?
+  filiere          Filiere?
+  studyLevel       StudyLevel?
+
+  // Étape 3 — Expérience
+  githubUrl        String?
+  linkedinUrl      String?
+  cvUrl            String?  // stockée sur Firebase Storage
+  interests        String?  @db.Text
+
+  // Étape 4 — Soft skills
+  frenchLevel      LanguageLevel?
+  englishLevel     LanguageLevel?
+  strengths        String[]  @default([])  // points forts cochés
+  improvements     String[]  @default([])  // points à améliorer
+
+  // État global
+  status           ProfileStatus  @default(INCOMPLETE)
+  completionPct    Int            @default(0)
+  currentStep      Int            @default(1)
+
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  skills           ProfileSkill[]
+  experiences      Experience[]
+
+  @@index([status])
+}
+
+// Compétences techniques (étape 2)
+model SkillDomain {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String?
+  icon        String?
+  order       Int      @default(0)
+  skills      Skill[]
+}
+
+model Skill {
+  id        String         @id @default(cuid())
+  domainId  String
+  domain    SkillDomain    @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  slug      String
+  name      String
+  profiles  ProfileSkill[]
+
+  @@unique([domainId, slug])
+}
+
+model ProfileSkill {
+  id        String     @id @default(cuid())
+  profileId String
+  skillId   String
+  level     SkillLevel @default(NOTIONS)
+  profile   StudentProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  skill     Skill          @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, skillId])
+}
+
+model Experience {
+  id          String   @id @default(cuid())
+  profileId   String
+  profile     StudentProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  title       String
+  description String   @db.Text
+  company     String?
+  startDate   DateTime?
+  endDate     DateTime?
+  createdAt   DateTime @default(now())
+}
+
+// =====================================================================
+//  RÉSERVATION & PAIEMENT — §3.4
+// =====================================================================
+
+enum TimeSlot {
+  MORNING      // 09:00
+  AFTERNOON    // 13:00
+  EVENING      // 18:00
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+model Booking {
+  id         String         @id @default(cuid())
+  userId     String
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date       DateTime       // jour du test (date seule)
+  slot       TimeSlot
+  status     BookingStatus  @default(PENDING)
+  payment    Payment?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  @@unique([userId, date, slot])
+  @@index([date, slot])
+}
+
+enum PaymentMethod {
+  STRIPE
+  D17
+  OFFLINE
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+model Payment {
+  id              String         @id @default(cuid())
+  userId          String
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookingId       String?        @unique
+  booking         Booking?       @relation(fields: [bookingId], references: [id])
+  amount          Int            // en centimes (millimes)
+  currency        String         @default("TND")
+  method          PaymentMethod
+  status          PaymentStatus  @default(PENDING)
+  externalId      String?        // stripe_session_id / d17_tx_id
+  metadata        Json?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([status])
+}
+
+// =====================================================================
+//  TESTS IA — §4
+// =====================================================================
+
+enum TestCodeStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+  USED_UP
+}
+
+model TestCode {
+  id               String          @id @default(cuid())
+  code             String          @unique  // 8 caractères alphanumériques
+  status           TestCodeStatus  @default(ACTIVE)
+  maxUsage         Int             @default(1)
+  usedCount        Int             @default(0)
+  validFrom        DateTime        @default(now())
+  expiresAt        DateTime
+  createdByAdminId String
+  note             String?
+  createdAt        DateTime        @default(now())
+
+  sessions         TestSession[]
+
+  @@index([status])
+}
+
+enum QuestionType {
+  QCM
+  TRUE_FALSE
+  CODE_COMPLETION
+  OPEN_SHORT
+  SCENARIO
+  LANG_READING
+  LANG_VOCAB
+  LANG_GRAMMAR
+  SOFT_LOGIC
+  SOFT_BEHAVIOR
+}
+
+enum TestSection {
+  TECHNICAL           // Partie A
+  FRENCH              // Partie B1
+  ENGLISH             // Partie B2
+  SOFT_SKILLS         // Partie B3
+}
+
+enum TestSessionStatus {
+  GENERATED
+  IN_PROGRESS
+  SUBMITTED
+  EVALUATED
+  ABANDONED
+}
+
+model TestSession {
+  id                String            @id @default(cuid())
+  userId            String
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeId            String
+  code              TestCode          @relation(fields: [codeId], references: [id])
+  status            TestSessionStatus @default(GENERATED)
+
+  // Données IA (générées par Claude)
+  generatedAt       DateTime          @default(now())
+  startedAt         DateTime?
+  submittedAt       DateTime?
+  evaluatedAt       DateTime?
+
+  // Claude input/output (traçabilité)
+  promptTokens      Int?
+  completionTokens  Int?
+
+  // Scoring
+  totalScore        Int?   // /100
+  technicalScore    Int?
+  frenchScore       Int?
+  englishScore      Int?
+  softScore         Int?
+  level             String? // Junior / Mid / Senior
+
+  questions         Question[]
+  answers           Answer[]
+  reports           Report[]
+
+  @@index([status])
+  @@index([userId])
+}
+
+model Question {
+  id             String       @id @default(cuid())
+  sessionId      String
+  session        TestSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  section        TestSection
+  type           QuestionType
+  prompt         String       @db.Text
+  options        Json?        // Pour QCM : {"A":"...","B":"..."}
+  correctAnswer  String?      @db.Text
+  correctData    Json?        // ex. mots-clés attendus pour réponse ouverte
+  domainSkill    String?      // ex: "react", "python"
+  points         Int          @default(1)
+  order          Int
+
+  answer         Answer?
+
+  @@index([sessionId, order])
+}
+
+model Answer {
+  id            String   @id @default(cuid())
+  sessionId     String
+  session       TestSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  questionId    String       @unique
+  question      Question     @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  value         String?      @db.Text
+  submittedAt   DateTime     @default(now())
+  timeSpentSec  Int          @default(0)  // max 30 par question
+  timedOut      Boolean      @default(false)
+
+  // Évaluation IA
+  aiScore       Int?
+  aiFeedback    String?      @db.Text
+  isCorrect     Boolean?
+}
+
+enum ReportKind {
+  ADMIN_DETAILED
+  STUDENT_SIMPLE
+}
+
+model Report {
+  id          String       @id @default(cuid())
+  userId      String
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId   String
+  session     TestSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  kind        ReportKind
+  content     Json         // JSON structuré : scores, points forts, axes
+  pdfUrl      String?      // lien stockage Firebase
+  createdAt   DateTime     @default(now())
+
+  @@index([kind])
+  @@index([userId])
+}
+
+// =====================================================================
+//  PFE & ENCADREMENT — §5
+// =====================================================================
+
+enum PFEStatus {
+  DRAFT              // proposition
+  APPROVED
+  IN_PROGRESS
+  UNDER_REVIEW
+  DEFENDED
+  CLOSED
+}
+
+enum KanbanStatus {
+  BACKLOG
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+}
+
+model Supervisor {
+  id             String         @id @default(cuid())
+  userId         String         @unique
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  specialties    String[]       @default([])  // domaines
+  maxStudents    Int            @default(5)
+  available      Boolean        @default(true)
+  bio            String?        @db.Text
+
+  pfeProjects    PFE[]
+  messages       Message[]
+}
+
+model PFE {
+  id              String       @id @default(cuid())
+  studentId       String
+  student         User         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  supervisorId    String?
+  supervisor      Supervisor?  @relation(fields: [supervisorId], references: [id])
+
+  title           String
+  description     String       @db.Text
+  domain          String
+  status          PFEStatus    @default(DRAFT)
+  progress        Int          @default(0)      // 0-100 %
+  startDate       DateTime?
+  endDate         DateTime?
+  finalGrade      Float?
+  finalReportUrl  String?
+  certificateUrl  String?
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  tasks           KanbanTask[]
+  deliverables    Deliverable[]
+  messages        Message[]
+
+  @@index([status])
+  @@index([studentId])
+}
+
+model KanbanTask {
+  id         String        @id @default(cuid())
+  pfeId      String
+  pfe        PFE           @relation(fields: [pfeId], references: [id], onDelete: Cascade)
+  title      String
+  description String?      @db.Text
+  status     KanbanStatus  @default(BACKLOG)
+  dueDate    DateTime?
+  order      Int           @default(0)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  @@index([pfeId, status])
+}
+
+enum DeliverableKind {
+  INTERIM_REPORT
+  PROTOTYPE
+  FINAL_REPORT
+  CODE_REPOSITORY
+  OTHER
+}
+
+model Deliverable {
+  id          String          @id @default(cuid())
+  pfeId       String
+  pfe         PFE             @relation(fields: [pfeId], references: [id], onDelete: Cascade)
+  kind        DeliverableKind
+  title       String
+  fileUrl     String
+  fileSize    Int?
+  version     Int             @default(1)
+  feedback    String?         @db.Text
+  grade       Float?
+  submittedAt DateTime        @default(now())
+}
+
+model Message {
+  id           String       @id @default(cuid())
+  pfeId        String?
+  pfe          PFE?         @relation(fields: [pfeId], references: [id], onDelete: Cascade)
+  supervisorId String?
+  supervisor   Supervisor?  @relation(fields: [supervisorId], references: [id])
+  senderId     String
+  content      String       @db.Text
+  createdAt    DateTime     @default(now())
+
+  @@index([pfeId])
+}
+
+// =====================================================================
+//  ENTREPRISES & OFFRES — §6
+// =====================================================================
+
+model Company {
+  id          String       @id @default(cuid())
+  userId      String       @unique
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  sector      String
+  description String?      @db.Text
+  website     String?
+  logoUrl     String?
+  verified    Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+
+  offers      JobOffer[]
+}
+
+enum OfferType {
+  INTERNSHIP
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+}
+
+enum OfferStatus {
+  OPEN
+  CLOSED
+  DRAFT
+}
+
+model JobOffer {
+  id             String      @id @default(cuid())
+  companyId      String
+  company        Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  title          String
+  description    String      @db.Text
+  requiredSkills String[]    @default([])
+  offerType      OfferType
+  status         OfferStatus @default(OPEN)
+  location       String?
+  remoteAllowed  Boolean     @default(false)
+  salaryMin      Int?
+  salaryMax      Int?
+  createdAt      DateTime    @default(now())
+
+  applications   Application[]
+
+  @@index([status])
+}
+
+enum ApplicationStatus {
+  APPLIED
+  INTERVIEWING
+  REJECTED
+  HIRED
+  WITHDRAWN
+}
+
+model Application {
+  id             String             @id @default(cuid())
+  offerId        String
+  offer          JobOffer           @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  studentId      String
+  matchScore     Float?             // 0-100 : score de matching IA
+  status         ApplicationStatus  @default(APPLIED)
+  createdAt      DateTime           @default(now())
+
+  @@unique([offerId, studentId])
+}
+
+// Certification (§6.1)
+model Certification {
+  id              String   @id @default(cuid())
+  studentId       String
+  pfeId           String?
+  title           String
+  skills          String[] @default([])
+  qrCode          String   // token unique pour QR
+  issuedAt        DateTime @default(now())
+  pdfUrl          String?
+
+  @@index([studentId])
+}
+
+// =====================================================================
+//  INFRASTRUCTURE — notifications, logs
+// =====================================================================
+
+enum NotificationType {
+  INFO
+  WARNING
+  SUCCESS
+  ERROR
+  REMINDER
+}
+
+model Notification {
+  id        String            @id @default(cuid())
+  userId    String
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType  @default(INFO)
+  title     String
+  body      String            @db.Text
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime          @default(now())
+
+  @@index([userId, readAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  entityType String?
+  entityId   String?
+  payload    Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([action])
+  @@index([createdAt])
+}
